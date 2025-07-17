@@ -64,8 +64,15 @@ template fraction*(N: int, phase: uint): float =
   # a float for further processing
   float(phase and fractionHigh(N)) * inverseFractionHigh(N)
 
-proc lin*[N: static[int]](table: array[N, float32], index: uint, fraction: float): float32 =
- table[index] + fraction * (table[(index + 1) and (N - 1)] - table[index])
+template indexFraction*(N: int, phase: uint): (uint, float) =
+  (index(N, phase), fraction(N, phase))
+
+proc near*[N: static[int]](table: array[N, float32], phase: uint): float32 =
+  table[ index(N, phase) ]
+
+proc lin*[N: static[int]](table: array[N, float32], phase: uint): float32 =
+  let (index, fraction) = indexFraction(N, phase)
+  table[index] + fraction * (table[(index + 1) and (N - 1)] - table[index])
 
 proc herm*[N: static[int]](table: array[N, float32], index: uint, fraction: float): float32 =
   # Hermite interpolation. This is more expensive for linear
