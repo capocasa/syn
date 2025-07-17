@@ -112,12 +112,12 @@ template sawd*(phase: uint): float32 =
 
 proc pulse*(phase: uint, width: range[0'f..1'f] = 0.5): float32 = 
   # Square wave: -1 for first part, +1 for second part
-  # Use 64-bit arithmetic but handle precision carefully
-  let normalized = phase.float64 / (high(uint).float64 + 1.0)
-  if normalized < width.float64:
-    -1.0f
-  else:
-    1.0f
+  # Use bitwise operations to avoid branching
+  let threshold = if width == 0.5: high(uint) shr 1
+                  elif width == 0.25: high(uint) shr 2
+                  else: uint(width.float64 * high(uint).float64)
+  let sign_bit = uint32(phase >= threshold) shl 31
+  cast[float32](0xBF800000'u32 xor sign_bit)
 
 template triangle*(phase: uint): float32 =
  cast[float32](((phase xor (0 - uint(phase > high(uint) shr 1))) shr 7) or 0x40000000'u32) - 3.0f
