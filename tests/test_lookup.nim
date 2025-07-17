@@ -37,4 +37,20 @@ suite "Table lookups":
     check waveform.lin(high(uint) + 1) == -0.0
     
     check almostEqual(waveform.lin(high(uint) - high(uint) div 7), -0.5714286)
+  
+  test "Hermite interpolation":
+    check waveform.herm(0'u) == 0.0
+    check waveform.herm(high(uint) div 2) == 0.0  # no edge case like nearest neighbor
+    check waveform.herm(high(uint) div 2 + 1) == 0.0
+    check waveform.herm(high(uint) - high(uint) div 4 - 1) == -1.0 # no edge case
+    check waveform.herm(high(uint) - high(uint) div 4) == -1.0
+    check almostEqual(waveform.herm(high(uint) - high(uint) div 9), -0.44444445, 1)
+    check almostEqual(waveform.herm(high(uint) - high(uint) div 9), -0.44444445, 1)
+    check waveform.herm(high(uint)) == -0.0 # no edge case
+    check waveform.herm(high(uint) + 1) == -0.0
+    
+    check almostEqual(waveform.herm(high(uint) - high(uint) div 7), -0.5801749)
+
+    # TODO: I have no idea what hermite is supposed to look like, so a few
+    # more key tests would be good
 

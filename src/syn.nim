@@ -74,7 +74,7 @@ proc lin*[N: static[int]](table: array[N, float32], phase: uint): float32 =
   let (index, fraction) = indexFraction(N, phase)
   table[index] + fraction * (table[(index + 1) and (N - 1)] - table[index])
 
-proc herm*[N: static[int]](table: array[N, float32], index: uint, fraction: float): float32 =
+proc herm*[N: static[int]](table: array[N, float32], phase: uint): float32 =
   # Hermite interpolation. This is more expensive for linear
   # Current tradeoff is this makes sense even for wavetables if you use the AVX2 version
   # This scalar version is fine for slower moving stuff
@@ -87,7 +87,7 @@ proc herm*[N: static[int]](table: array[N, float32], index: uint, fraction: floa
   # including when index is 0 and index - 1 wraps around to high(uint)
   # that gets masked away to the highest table index, which is what we want
   #
-  assertPo2(N)
+  let (index, fraction) = indexFraction(N, phase)
   let xm1 = table[ (index - 1) and indexHigh(N) ]
   let x0  = table[ index and indexHigh(N) ]
   let x1  = table[ (index + 1) and indexHigh(N) ]
