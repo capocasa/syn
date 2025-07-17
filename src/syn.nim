@@ -1,123 +1,155 @@
-import std/[math]
-import nimsimd/avx2
+import std/[math, bitops]
+#import nimsimd/avx2, pffft
 
-{.passC: "-O3 -ffast-math -march=native -mtune=native".}
+# some templates to derive some values at compile time
+# these would be constants if the table length was fixed
 
-template addmod1*[T: SomeFloat](a, b: T): T =
-  (a + b) mod 1.0
+template indexBitCount*(N: int): int =
+  # the most significant N bits of the int are used to index into the wavetables
+  # an unsigned int phase wraps around naturally which is worth it since this stuff
+  # get's called at every sample, 48k times per second or more
+  N.countTrailingZeroBits
 
-template incmod1*(a: var float32, b: float32) =
-  a = a addmod1 b
+template indexHigh*(N: int): uint =
+  # This is the highest number that can be represented by the bits reserved
+  # for the index. This can be used with a bitwise and to efficiently wrap
+  uint(N) - 1
 
-proc herm*(table: openArray[float32], phase: float32): float32 =
-  let scaledIndex = phase * float32(table.len - 3)
-  let index_integral = int32(scaledIndex) + 1
-  let index_fractional = scaledIndex - float32(index_integral - 1)
-  let xm1 = table[index_integral - 1]
-  let x0  = table[index_integral + 0]
-  let x1  = table[index_integral + 1]
-  let x2  = table[index_integral + 2]
+template fractionBitCount*(N: int): int =
+  # the remaining bits of the int are used to create a float 0..1 and used for interpolation
+  # you take this many bits from the phase, and divite by the max value represented by those bits
+  # they are simply the bits that are left over after subtracting the ones from the table size
+  # 
+  # the value is totally massively overkill but allows phase stability even after days and weeks
+  # and costs nothing on 64 bit systems. also, if you have really large wavetables, say 16 bits,
+  # it's still more than enough for nice interpolation
+  sizeof(int) * 8 - indexBitCount(N)
+
+template fractionHigh*(N: int): uint =
+  # the highest number that can be represented with the number of bits in the phase value that
+  # are reserved for interpolation
+  1'u64 shl fractionBitCount(N) - 1
+
+template assertPo2*(N: untyped) =
+  # insist certain values be a power of 2
+  assert (N and (N - 1)) == 0, "power of 2 required for N"
+
+template inverseFractionHigh*(N): float =
+  # this is mostly here to make it clear we are dividing
+  # by a constant value, which is done as a (fast) multiplication
+  
+  # converting loses a bit but fractionBitCount is more like 52 bits anyway,
+  # depending on wavetable size
+  1 / fractionHigh(N).float
+
+template index*(N: int, phase: uint): uint =
+  # Get the wavetable index from the phase
+  # It will just shift off the bits representing the fraction-of-a-sample
+  # 
+  # the remaing ones can directly index the table
+  # this is very efficient and they way digital synths have been done for ages
+  # including the Yamaha DX7 and even further back
+  #
+  # The int is just there as a reminder that table sizes don't get that large,
+  # the compiler probably turns it into int anyway for performance
+  #
+  # Learned this trick from studying the Helm-Synth oscillator. It's a testament to
+  # the power of Free Software that I was allowed to observe such extreme skill.
+  #
+  # Thanks Matt!
+  phase shr fractionBitCount(N)  # note shr pads zeros (logical right shift) for unsigned integers, which is what we want
+
+template fraction*(N: int, phase: uint): float =
+  # Mask the index bits, multiply by inverse-of-max to get the fraction as
+  # a float for further processing
+  float(phase and fractionHigh(N)) * inverseFractionHigh(N)
+
+proc lin*[N: static[int]](table: array[N, float32], index: uint, fraction: float): float32 =
+ table[index] + fraction * (table[(index + 1) and (N - 1)] - table[index])
+
+proc herm*[N: static[int]](table: array[N, float32], index: uint, fraction: float): float32 =
+  # Hermite interpolation. This is more expensive for linear
+  # Current tradeoff is this makes sense even for wavetables if you use the AVX2 version
+  # This scalar version is fine for slower moving stuff
+  #
+  # adapted from https://github.com/pichenettes/stmlib/blob/master/dsp/dsp.h
+  #
+  # Thanks emilie!
+  #
+  # 'and indexHigh(N)' is efficient wrapping of index to 0..<N 
+  # including when index is 0 and index - 1 wraps around to high(uint)
+  # that gets masked away to the highest table index, which is what we want
+  #
+  assertPo2(N)
+  let xm1 = table[ (index - 1) and indexHigh(N) ]
+  let x0  = table[ index and indexHigh(N) ]
+  let x1  = table[ (index + 1) and indexHigh(N) ]
+  let x2  = table[ (index + 2) and indexHigh(N) ]
   let c = (x1 - xm1) * 0.5f32
   let v = x0 - x1
   let w = c + v
   let a = w + v + (x2 - x0) * 0.5f32
   let b_neg = w + a
-  let f = index_fractional
-  result = (((a * f) - b_neg) * f + c) * f + x0
+  result = (((a * fraction) - b_neg) * fraction + c) * fraction + x0
 
-proc herm*(table: openArray[float32], phases: openArray[float32]): seq[float32] =
-  assert phases.len mod 16 == 0, "phases.len must be divisible by 16"
-  result = newSeq[float32](phases.len)
-  let tableLen = float32(table.len - 3)
-  let tableLenVec = mm256_set1_ps(tableLen)
-  let halfVec = mm256_set1_ps(0.5f32)
-  let oneVec = mm256_set1_epi32(1)
-  
-  let phasesPtr = cast[ptr float32](phases[0].unsafeAddr)
-  let resultPtr = cast[ptr float32](result[0].addr)
-  let tablePtr = cast[ptr float32](table[0].unsafeAddr)
-  
-  var i = 0
-  while i < phases.len:
-    # Process two 256-bit vectors (16 values) per iteration
-    let phaseVec1 = mm256_loadu_ps(cast[ptr float32](cast[int](phasesPtr) + i * sizeof(float32)))
-    let phaseVec2 = mm256_loadu_ps(cast[ptr float32](cast[int](phasesPtr) + (i + 8) * sizeof(float32)))
-    
-    # First 8 values
-    let scaledIndexVec1 = mm256_mul_ps(phaseVec1, tableLenVec)
-    let indexIntegralVec1 = mm256_add_epi32(mm256_cvtps_epi32(scaledIndexVec1), oneVec)
-    let indexFractionalVec1 = mm256_sub_ps(scaledIndexVec1, mm256_cvtepi32_ps(mm256_sub_epi32(indexIntegralVec1, oneVec)))
-    
-    # Second 8 values
-    let scaledIndexVec2 = mm256_mul_ps(phaseVec2, tableLenVec)
-    let indexIntegralVec2 = mm256_add_epi32(mm256_cvtps_epi32(scaledIndexVec2), oneVec)
-    let indexFractionalVec2 = mm256_sub_ps(scaledIndexVec2, mm256_cvtepi32_ps(mm256_sub_epi32(indexIntegralVec2, oneVec)))
-    
-    # Vectorized gather operations for first 8 values
-    let xm1Vec1 = mm256_i32gather_ps(tablePtr, mm256_sub_epi32(indexIntegralVec1, oneVec), 4)
-    let x0Vec1 = mm256_i32gather_ps(tablePtr, indexIntegralVec1, 4)
-    let x1Vec1 = mm256_i32gather_ps(tablePtr, mm256_add_epi32(indexIntegralVec1, oneVec), 4)
-    let x2Vec1 = mm256_i32gather_ps(tablePtr, mm256_add_epi32(indexIntegralVec1, mm256_set1_epi32(2)), 4)
-    
-    # Vectorized gather operations for second 8 values
-    let xm1Vec2 = mm256_i32gather_ps(tablePtr, mm256_sub_epi32(indexIntegralVec2, oneVec), 4)
-    let x0Vec2 = mm256_i32gather_ps(tablePtr, indexIntegralVec2, 4)
-    let x1Vec2 = mm256_i32gather_ps(tablePtr, mm256_add_epi32(indexIntegralVec2, oneVec), 4)
-    let x2Vec2 = mm256_i32gather_ps(tablePtr, mm256_add_epi32(indexIntegralVec2, mm256_set1_epi32(2)), 4)
-    
-    # Hermite interpolation for first 8 values
-    let cVec1 = mm256_mul_ps(mm256_sub_ps(x1Vec1, xm1Vec1), halfVec)
-    let vVec1 = mm256_sub_ps(x0Vec1, x1Vec1)
-    let wVec1 = mm256_add_ps(cVec1, vVec1)
-    let aVec1 = mm256_add_ps(mm256_add_ps(wVec1, vVec1), mm256_mul_ps(mm256_sub_ps(x2Vec1, x0Vec1), halfVec))
-    let bNegVec1 = mm256_add_ps(wVec1, aVec1)
-    
-    let fVec1 = indexFractionalVec1
-    let resultVec1 = mm256_add_ps(
-      mm256_mul_ps(
-        mm256_add_ps(
-          mm256_mul_ps(
-            mm256_sub_ps(
-              mm256_mul_ps(aVec1, fVec1),
-              bNegVec1
-            ),
-            fVec1
-          ),
-          cVec1
-        ),
-        fVec1
-      ),
-      x0Vec1
-    )
-    
-    # Hermite interpolation for second 8 values
-    let cVec2 = mm256_mul_ps(mm256_sub_ps(x1Vec2, xm1Vec2), halfVec)
-    let vVec2 = mm256_sub_ps(x0Vec2, x1Vec2)
-    let wVec2 = mm256_add_ps(cVec2, vVec2)
-    let aVec2 = mm256_add_ps(mm256_add_ps(wVec2, vVec2), mm256_mul_ps(mm256_sub_ps(x2Vec2, x0Vec2), halfVec))
-    let bNegVec2 = mm256_add_ps(wVec2, aVec2)
-    
-    let fVec2 = indexFractionalVec2
-    let resultVec2 = mm256_add_ps(
-      mm256_mul_ps(
-        mm256_add_ps(
-          mm256_mul_ps(
-            mm256_sub_ps(
-              mm256_mul_ps(aVec2, fVec2),
-              bNegVec2
-            ),
-            fVec2
-          ),
-          cVec2
-        ),
-        fVec2
-      ),
-      x0Vec2
-    )
-    
-    # Store results
-    mm256_storeu_ps(cast[ptr float32](cast[int](resultPtr) + i * sizeof(float32)), resultVec1)
-    mm256_storeu_ps(cast[ptr float32](cast[int](resultPtr) + (i + 8) * sizeof(float32)), resultVec2)
-    i += 16
+# Naive waveform generators
+proc sawtooth*[N: static[int]](phase: int): float32 =
+  ## Returns sawtooth wave (0..1) - linear ramp up
+  phase - floor(phase)
+
+proc reverseSawtooth*[N: static[int]](phase: float32): float32 =
+  ## Returns reverse sawtooth wave (1..0) - linear ramp down
+  1.0f32 - sawtooth(phase)
+
+proc pulse*[N: static[int]](phase: float32, width: range[0.0f32 .. 1.0f32]): float32 =
+  ## Returns pulse wave (0 or 1) based on phase and width
+  let wrappedPhase = sawtooth(phase)
+  if wrappedPhase < width: 1.0f32 else: 0.0f32
+
+proc triangle*[N: static[int]](phase: float32): float32 =
+  ## Returns triangle wave (0..1) based on phase
+  let wrappedPhase = sawtooth(phase)
+  if wrappedPhase < 0.5f32:
+    wrappedPhase * 2.0f32
+  else:
+    2.0f32 - (wrappedPhase * 2.0f32)
+
+proc trapezoid*[N: static[int]](phase: float32, slopeWidth: range[0.0f32 .. 0.5f32]): float32 =
+  ## Returns trapezoid wave (0..1) with adjustable slope width
+  let wrappedPhase = sawtooth(phase)
+  if wrappedPhase < slopeWidth:
+    # Rising slope
+    wrappedPhase / slopeWidth
+  elif wrappedPhase < (0.5f32 - slopeWidth):
+    # Flat top
+    1.0f32
+  elif wrappedPhase < 0.5f32:
+    # Falling slope to middle
+    1.0f32 - ((wrappedPhase - (0.5f32 - slopeWidth)) / slopeWidth)
+  elif wrappedPhase < (0.5f32 + slopeWidth):
+    # Flat bottom
+    0.0f32
+  elif wrappedPhase < (1.0f32 - slopeWidth):
+    # Rising slope from middle
+    ((wrappedPhase - (0.5f32 + slopeWidth)) / slopeWidth)
+  else:
+    # Falling slope to end
+    1.0f32 - ((wrappedPhase - (1.0f32 - slopeWidth)) / slopeWidth)
+
+proc stepped*[N: static[int]](phase: float32, steps: int): float32 =
+  ## Returns stepped/quantized wave (0..1) with specified number of steps
+  let wrappedPhase = sawtooth(phase)
+  let stepSize = 1.0f32 / float32(steps)
+  let stepIndex = int(wrappedPhase * float32(steps))
+  float32(stepIndex) * stepSize
+
+# Table generators
+proc fillSine*[N: static[int]](table: var array[N, float32]) =
+  for i in 0..<N:
+    table[i] = sin(2.0 * PI * float32(i) / float32(N))
+
+proc fillSine*[N: static[int]](): array[N, float32] =
+  fillSine(result)
+
 
 
