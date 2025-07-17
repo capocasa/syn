@@ -99,56 +99,45 @@ proc herm*[N: static[int]](table: array[N, float32], phase: uint): float32 =
   let b_neg = w + a
   result = (((a * fraction) - b_neg) * fraction + c) * fraction + x0
 
-# Naive waveform generators
-proc sawtooth*[N: static[int]](phase: int): float32 =
-  ## Returns sawtooth wave (0..1) - linear ramp up
-  phase - floor(phase)
+# tableless oscillators
+template saw*(phase: uint): float32 =
+  # Convert phase to float in range [0, 1) and scale to [-1, 1)
+  # Use 64-bit arithmetic but handle precision carefully
+  float32((phase.float64 / (high(uint).float64 + 1.0)) * 2.0 - 1.0)
 
-proc reverseSawtooth*[N: static[int]](phase: float32): float32 =
-  ## Returns reverse sawtooth wave (1..0) - linear ramp down
-  1.0f32 - sawtooth(phase)
+template sawd*(phase: uint): float32 =
+  # Downward sawtooth: starts at 1, goes to -1
+  # Use 64-bit arithmetic but handle precision carefully
+  float32(1.0 - (phase.float64 / (high(uint).float64 + 1.0)) * 2.0)
 
-proc pulse*[N: static[int]](phase: float32, width: range[0.0f32 .. 1.0f32]): float32 =
-  ## Returns pulse wave (0 or 1) based on phase and width
-  let wrappedPhase = sawtooth(phase)
-  if wrappedPhase < width: 1.0f32 else: 0.0f32
-
-proc triangle*[N: static[int]](phase: float32): float32 =
-  ## Returns triangle wave (0..1) based on phase
-  let wrappedPhase = sawtooth(phase)
-  if wrappedPhase < 0.5f32:
-    wrappedPhase * 2.0f32
+proc pulse*(phase: uint, width: range[0'f..1'f] = 0.5): float32 = 
+  # Square wave: -1 for first part, +1 for second part
+  # Use 64-bit arithmetic but handle precision carefully
+  let normalized = phase.float64 / (high(uint).float64 + 1.0)
+  if normalized < width.float64:
+    -1.0f
   else:
-    2.0f32 - (wrappedPhase * 2.0f32)
+    1.0f
 
-proc trapezoid*[N: static[int]](phase: float32, slopeWidth: range[0.0f32 .. 0.5f32]): float32 =
-  ## Returns trapezoid wave (0..1) with adjustable slope width
-  let wrappedPhase = sawtooth(phase)
-  if wrappedPhase < slopeWidth:
-    # Rising slope
-    wrappedPhase / slopeWidth
-  elif wrappedPhase < (0.5f32 - slopeWidth):
-    # Flat top
-    1.0f32
-  elif wrappedPhase < 0.5f32:
-    # Falling slope to middle
-    1.0f32 - ((wrappedPhase - (0.5f32 - slopeWidth)) / slopeWidth)
-  elif wrappedPhase < (0.5f32 + slopeWidth):
-    # Flat bottom
-    0.0f32
-  elif wrappedPhase < (1.0f32 - slopeWidth):
-    # Rising slope from middle
-    ((wrappedPhase - (0.5f32 + slopeWidth)) / slopeWidth)
-  else:
-    # Falling slope to end
-    1.0f32 - ((wrappedPhase - (1.0f32 - slopeWidth)) / slopeWidth)
+template triangle*(phase: uint): float32 =
+ cast[float32](((phase xor (0 - uint(phase > high(uint) shr 1))) shr 7) or 0x40000000'u32) - 3.0f
 
-proc stepped*[N: static[int]](phase: float32, steps: int): float32 =
-  ## Returns stepped/quantized wave (0..1) with specified number of steps
-  let wrappedPhase = sawtooth(phase)
-  let stepSize = 1.0f32 / float32(steps)
-  let stepIndex = int(wrappedPhase * float32(steps))
-  float32(stepIndex) * stepSize
+#[
+template triangle*(phase: uint, slope: range[0'f..1'f] = 0.5): float32 =
+ let pivot = uint(slope * float(high(uint)))
+ let mask = 0 - uint(phase > pivot)
+ let scaled = ((phase * high(uint)) div (pivot + mask and (high(uint) - 2 * pivot))) xor mask
+ cast[float32]((scaled shr 7) or 0x40000000'u32) - 3.0f
+]#
+
+template triangle*(phase: uint, slope: range[0'f..1'f] = 0.5): float32 =
+  let pivot = uint(slope * float(high(uint)))
+  let mask = 0 - uint(phase > pivot)
+  let up_phase = phase * high(uint) div pivot
+  let down_phase = high(uint) - ((phase - pivot) * high(uint) div (high(uint) - pivot))
+  let result = (up_phase and (not mask)) or (down_phase and mask)
+  cast[float32]((result shr 7) or 0x40000000'u32) - 3.0f
+
 
 # Table generators
 proc fillSine*[N: static[int]](table: var array[N, float32]) =
