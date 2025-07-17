@@ -12,3 +12,7 @@ installDirs   = @["clib"]
 requires "nim >= 2.0.0"
 requires "nimsimd"
 
+# Development dependencies
+when not defined(release):
+  requires "pixie"
+
