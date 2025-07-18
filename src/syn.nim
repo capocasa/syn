@@ -120,23 +120,30 @@ proc pulse*(phase: uint, width: range[0'f..1'f] = 0.5): float32 =
   cast[float32](0xBF800000'u32 xor sign_bit)
 
 template triangle*(phase: uint): float32 =
- cast[float32](((phase xor (0 - uint(phase > high(uint) shr 1))) shr 7) or 0x40000000'u32) - 3.0f
-
-#[
-template triangle*(phase: uint, slope: range[0'f..1'f] = 0.5): float32 =
- let pivot = uint(slope * float(high(uint)))
- let mask = 0 - uint(phase > pivot)
- let scaled = ((phase * high(uint)) div (pivot + mask and (high(uint) - 2 * pivot))) xor mask
- cast[float32]((scaled shr 7) or 0x40000000'u32) - 3.0f
-]#
+  # Branchless triangle wave: fold phase at midpoint
+  let mask = 0'u - uint(phase > (high(uint) shr 1))
+  let folded = phase xor mask
+  # Scale to [-1, 1] range
+  2.0f * (float32(folded) / float32(high(uint) shr 1)) - 1.0f
 
 template triangle*(phase: uint, slope: range[0'f..1'f] = 0.5): float32 =
-  let pivot = uint(slope * float(high(uint)))
-  let mask = 0 - uint(phase > pivot)
-  let up_phase = phase * high(uint) div pivot
-  let down_phase = high(uint) - ((phase - pivot) * high(uint) div (high(uint) - pivot))
-  let result = (up_phase and (not mask)) or (down_phase and mask)
-  cast[float32]((result shr 7) or 0x40000000'u32) - 3.0f
+  # Branchless triangle wave with adjustable slope
+  let pivot = case slope:
+    of 0.25f: high(uint) shr 2
+    of 0.5f: high(uint) shr 1 
+    of 0.75f: high(uint) - (high(uint) shr 2)
+    else: high(uint) shr 1  # default to 0.5
+  let mask = 0'u - uint(phase > pivot)
+  # First part: normalized phase in [0,1] scaled to [-1,1]  
+  let up_val = 2.0f * (float32(phase) / float32(pivot)) - 1.0f
+  # Second part: remaining phase normalized and scaled
+  let remaining = high(uint) - pivot
+  let down_val = 1.0f - 2.0f * (float32(phase - pivot) / float32(remaining))
+  # Branchless select using mask
+  let not_mask = mask xor 0xFFFFFFFF'u
+  let up_bits = cast[uint32](up_val) and not_mask
+  let down_bits = cast[uint32](down_val) and mask
+  cast[float32](up_bits or down_bits)
 
 
 # Table generators

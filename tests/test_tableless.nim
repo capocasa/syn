@@ -2,6 +2,35 @@ import unittest
 import math
 import ../src/syn
 
+proc triangle_ref*(phase: uint): float32 =
+  # Reference triangle wave implementation
+  if phase <= (high(uint) shr 1):
+    # First half: ramp up from -1 to 1
+    float32((phase.float64 / (high(uint).float64 / 2.0)) * 2.0 - 1.0)
+  else:
+    # Second half: ramp down from 1 to -1
+    let adjusted_phase = phase - (high(uint) shr 1)
+    float32(1.0 - (adjusted_phase.float64 / (high(uint).float64 / 2.0)) * 2.0)
+
+proc triangle_ref*(phase: uint, slope: range[0'f..1'f] = 0.5): float32 =
+  # Reference triangle wave with adjustable slope
+  let pivot = if slope == 0.5f: high(uint) shr 1
+              else: uint(slope.float64 * high(uint).float64)
+  if phase <= pivot:
+    # First part: ramp up from -1 to 1
+    if pivot == 0:
+      1.0f
+    else:
+      float32((phase.float64 / pivot.float64) * 2.0 - 1.0)
+  else:
+    # Second part: ramp down from 1 to -1
+    let remaining = high(uint) - pivot
+    if remaining == 0:
+      -1.0f
+    else:
+      let adjusted_phase = phase - pivot
+      float32(1.0 - (adjusted_phase.float64 / remaining.float64) * 2.0)
+
 suite "Tableless oscillator":
  test "saw":
    check saw(0'u) == -1'f
@@ -45,3 +74,16 @@ suite "Tableless oscillator":
    check pulse(0x7A1F2C687A1F2C68'u, 0.5'f) == -1'f  # second quarter (0.48)
    check pulse(0xB6C4E892B6C4E892'u, 0.5'f) == 1'f   # third quarter (0.71)
    check pulse(0xF2A9D1B7F2A9D1B7'u, 0.5'f) == 1'f   # fourth quarter (0.95)
+   
+ test "triangle":
+   # Test basic triangle wave against reference implementation
+   let quarter = high(uint) shr 2
+   let half = high(uint) shr 1
+   let three_quarter = half + quarter
+   
+   # Test with adjustable slope
+   check almostEqual(triangle(0'u, 0.5'f), triangle_ref(0'u, 0.5'f), 1)
+   check almostEqual(triangle(quarter, 0.5'f), triangle_ref(quarter, 0.5'f), 1)
+   check almostEqual(triangle(half, 0.5'f), triangle_ref(half, 0.5'f), 1)
+   check almostEqual(triangle(three_quarter, 0.5'f), triangle_ref(three_quarter, 0.5'f), 1)
+   check almostEqual(triangle(high(uint), 0.5'f), triangle_ref(high(uint), 0.5'f), 1)
