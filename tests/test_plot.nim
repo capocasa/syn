@@ -46,6 +46,40 @@ suite "Visualizations (manual review)":
       let triangle75Image = plot(triangle75Proc)
       triangle75Image.writeFile("test_output/triangle_75.png")
       
+      # Generate bandlimited sawtooth wavetable plot
+      var sawTable: array[2048, float32]
+      # Fill with naive sawtooth using saw procedure
+      for i in 0..<2048:
+        let phase = uint(i) * (high(uint) div 2048)
+        sawTable[i] = saw(phase)
+      
+      # Bandlimit in place (using 48kHz sample rate, cutoff at 5kHz for visible effect)
+      var bandlimited = sawTable
+      bandlimit(sawTable, bandlimited, 5000.0f32, 48000.0f32)
+      sawTable = bandlimited
+      
+      # Create proc for linear interpolated lookup
+      proc bandlimitedSawProc(phase: uint): float32 = lin(sawTable, phase)
+      let bandlimitedSawImage = plot(bandlimitedSawProc)
+      bandlimitedSawImage.writeFile("test_output/bandlimited_saw.png")
+      
+      # Generate bandlimited sawd wavetable plot
+      var sawdTable: array[2048, float32]
+      # Fill with naive sawd using sawd procedure
+      for i in 0..<2048:
+        let phase = uint(i) * (high(uint) div 2048)
+        sawdTable[i] = sawd(phase)
+      
+      # Bandlimit in place (using 48kHz sample rate, cutoff at 5kHz for visible effect)
+      var bandlimitedSawd = sawdTable
+      bandlimit(sawdTable, bandlimitedSawd, 5000.0f32, 48000.0f32)
+      sawdTable = bandlimitedSawd
+      
+      # Create proc for linear interpolated lookup
+      proc bandlimitedSawdProc(phase: uint): float32 = lin(sawdTable, phase)
+      let bandlimitedSawdImage = plot(bandlimitedSawdProc)
+      bandlimitedSawdImage.writeFile("test_output/bandlimited_sawd.png")
+      
       echo "Visualization plots generated in test_output/"
       echo "Files created:"
       echo "  - saw.png (sawtooth wave)"
@@ -55,3 +89,5 @@ suite "Visualizations (manual review)":
       echo "  - triangle.png (triangle wave 50%)"
       echo "  - triangle_25.png (triangle wave 25%)"
       echo "  - triangle_75.png (triangle wave 75%)"
+      echo "  - bandlimited_saw.png (bandlimited sawtooth wavetable)"
+      echo "  - bandlimited_sawd.png (bandlimited downward sawtooth wavetable)"

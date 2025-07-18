@@ -1,5 +1,6 @@
 import std/[math, bitops]
-#import nimsimd/avx2, pffft
+import pffft
+#import nimsimd/avx2
 
 # some templates to derive some values at compile time
 # these would be constants if the table length was fixed
@@ -148,11 +149,92 @@ template triangle*(phase: uint, slope: range[0'f..1'f] = 0.5): float32 =
 
 # Table generators
 proc fillSine*[N: static[int]](table: var array[N, float32]) =
+  assertPo2(N)
   for i in 0..<N:
     table[i] = sin(2.0 * PI * float32(i) / float32(N))
 
 proc fillSine*[N: static[int]](): array[N, float32] =
   fillSine(result)
 
+# Bandlimiting using pffft
+proc bandlimit*(naive: openArray[float32], bandlimited: var openArray[float32], 
+               cutoffFreq: float32, sampleRate: float32) =
+  # TODO: find ways to avoid copying
+  ## Apply bandlimiting to waveform using real FFT
+  ## cutoffFreq: frequency above which harmonics are removed
+  ## sampleRate: sample rate of the waveform
+  
+  let n = naive.len
+  assert n == bandlimited.len, "Input and output arrays must have same length"
+  assertPo2(n)
+  
+  # Import pffft - we'll need to add this import at the top
+  #when not declared(pffft):
+  #  {.error: "pffft module not imported - add 'import ../pffft/src/pffft' to use bandlimit".}
+  
+  withFft[float32](n, PFFFT_REAL, setup):
+    setup.withData(inputBuf, outputBuf, workBuf):
+      # Copy input to aligned buffer
+      for i in 0..<n:
+        inputBuf[i] = cfloat(naive[i])
+      
+      # Forward FFT: time domain -> frequency domain
+      transformOrdered(setup, cast[ptr cfloat](inputBuf), cast[ptr cfloat](outputBuf), 
+                      cast[ptr cfloat](workBuf), PFFFT_FORWARD)
+      
+      # Apply bandlimiting: zero out frequencies above cutoff
+      # For real FFT, we get N/2 complex bins (stored as interleaved real/imag)
+      let cutoffBin = int(cutoffFreq * float32(n) / sampleRate)
+      
+      # Zero out bins above cutoff frequency
+      for i in (cutoffBin * 2)..<n:
+        outputBuf[i] = 0.0f32
+      
+      # Inverse FFT: frequency domain -> time domain
+      transformOrdered(setup, cast[ptr cfloat](outputBuf), cast[ptr cfloat](inputBuf), 
+                      cast[ptr cfloat](workBuf), PFFFT_BACKWARD)
+      
+      # Copy result back and normalize (pffft doesn't normalize)
+      let scale = 1.0f32 / float32(n)
+      for i in 0..<n:
+        bandlimited[i] = float32(inputBuf[i]) * scale
+
+proc fillSaw*[N: static[int]](table: var array[N, float32], sr: float32) =
+  ## Generate a bandlimited sawtooth wavetable
+  assertPo2(N)
+  
+  # Generate sawtooth using existing saw template
+  for i in 0..<N:
+    let phase = uint(i) * (high(uint) div uint(N))
+    table[i] = saw(phase)
+  
+  # Apply bandlimiting at Nyquist frequency
+  var bandlimited: array[N, float32]
+  bandlimit(table, bandlimited, sr / 2.0f32, sr)
+  
+  # Copy bandlimited result back
+  table = bandlimited
+
+proc fillSaw*[N: static[int]](sr: float32): array[N, float32] =
+  fillSaw(result, sr)
+
+proc fillSawd*[N: static[int]](table: var array[N, float32], sr: float32) =
+  ## Generate a bandlimited reverse sawtooth wavetable
+  assertPo2(N)
+  
+  # Generate reverse sawtooth using existing sawd template
+  for i in 0..<N:
+    let phase = uint(i) * (high(uint) div uint(N))
+    table[i] = sawd(phase)
+  
+  # Apply bandlimiting at Nyquist frequency
+  var bandlimited: array[N, float32]
+  bandlimit(table, bandlimited, sr / 2.0f32, sr)
+  
+  # Copy bandlimited result back
+  table = bandlimited
+
+proc fillSawd*[N: static[int]](sr: float32): array[N, float32] =
+  fillSawd(result, sr)
 
 
