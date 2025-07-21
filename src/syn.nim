@@ -1,5 +1,6 @@
 import std/[math, bitops]
 import pffft
+import syn/math
 #import nimsimd/avx2
 
 # some templates to derive some values at compile time
@@ -236,5 +237,44 @@ proc fillSawd*[N: static[int]](table: var array[N, float32], sr: float32) =
 
 proc fillSawd*[N: static[int]](sr: float32): array[N, float32] =
   fillSawd(result, sr)
+
+proc fillPulse*[N: static[int]](table: var array[N, float32], sr: float32) =
+  ## Generate a bandlimited pulse/square wavetable (50% duty cycle)
+  assertPo2(N)
+  
+  # Generate pulse using existing pulse template with 0.5 duty cycle
+  for i in 0..<N:
+    let phase = uint(i) * (high(uint) div uint(N))
+    table[i] = pulse(phase, 0.5)
+  
+  # Apply bandlimiting at Nyquist frequency
+  var bandlimited: array[N, float32]
+  bandlimit(table, bandlimited, sr / 2.0f32, sr)
+  
+  # Copy bandlimited result back
+  table = bandlimited
+
+proc fillPulse*[N: static[int]](sr: float32): array[N, float32] =
+  fillPulse(result, sr)
+
+proc fillTriangle*[N: static[int]](table: var array[N, float32], sr: float32) =
+  ## Generate a bandlimited triangle wavetable (50% slope)
+  assertPo2(N)
+  
+  # Generate triangle using existing triangle template with 0.5 slope
+  for i in 0..<N:
+    let phase = uint(i) * (high(uint) div uint(N))
+    table[i] = triangle(phase, 0.5)
+  
+  # Apply bandlimiting at Nyquist frequency
+  var bandlimited: array[N, float32]
+  bandlimit(table, bandlimited, sr / 2.0f32, sr)
+  
+  # Copy bandlimited result back
+  table = bandlimited
+
+proc fillTriangle*[N: static[int]](sr: float32): array[N, float32] =
+  fillTriangle(result, sr)
+
 
 
