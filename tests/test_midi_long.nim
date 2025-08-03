@@ -7,7 +7,7 @@ proc createMidiEvent(eventType: uint8, data1: uint8, data2: uint8, channel: uint
   result[1] = data1
   result[2] = data2
 
-suite "MIDI toArrayFromEvents Big Tests":
+suite "MIDI toArrays Big Tests":
   
   test "Complex musical scenario with full feature set":
     var events: seq[(int, array[3, uint8])] = @[]
@@ -66,7 +66,7 @@ suite "MIDI toArrayFromEvents Big Tests":
     events.add((62, createMidiEvent(0x80, 60, 0)))   # C4 off
     events.add((63, createMidiEvent(0x80, 64, 0)))   # E4 off
     
-    let (voices, controls) = toArrayFromEvents(events, N=64, polyphony=8, aftertouch=true, 
+    let (voices, controls) = toArrays(events, N=64, polyphony=8, aftertouch=true, 
                                    ccs=[ModWheel, Sustain, Program, Pressure, Bend, BendFine])
     
     # Test key checkpoints in the musical progression
@@ -166,7 +166,7 @@ suite "MIDI toArrayFromEvents Big Tests":
     for i in 0..3:
       events.add((24 + i, createMidiEvent(0x90, uint8(72 + i), uint8(110 + i))))
     
-    let (voices, controls) = toArrayFromEvents(events, N=32, polyphony=8, ccs=[ModWheel])
+    let (voices, controls) = toArrays(events, N=32, polyphony=8, ccs=[ModWheel])
     
     # Verify initial 8 notes are allocated
     for i in 0..7:
@@ -199,7 +199,7 @@ suite "MIDI toArrayFromEvents Big Tests":
       (7, createMidiEvent(0xB0, 1, 70, 9))      # ModWheel ch 9 - allowed
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=16, polyphony=8, 
+    let (voices, controls) = toArrays(events, N=16, polyphony=8, 
                                    ccs=[ModWheel], channels=[0'i8, 9'i8])
     
     # Only channels 0 and 9 should appear
@@ -234,7 +234,7 @@ suite "MIDI toArrayFromEvents Big Tests":
         # Note off 2 frames later
         events.add((frame, createMidiEvent(0x80, uint8(60 + (frame - 2) div 4), 0)))
     
-    let (voices, controls) = toArrayFromEvents(events, N=32, polyphony=8, ccs=[ModWheel])
+    let (voices, controls) = toArrays(events, N=32, polyphony=8, ccs=[ModWheel])
     
     # Verify rapid on/off pattern
     check voices[0][0][0] == 60     # First note on

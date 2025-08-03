@@ -7,7 +7,7 @@ proc createMidiEvent(eventType: uint8, data1: uint8, data2: uint8, channel: uint
   result[1] = data1
   result[2] = data2
 
-suite "MIDI toArrayFromEvents Tests":
+suite "MIDI toArrays Tests":
   
   test "Basic note on/off":
     let events = [
@@ -15,7 +15,7 @@ suite "MIDI toArrayFromEvents Tests":
       (3, createMidiEvent(0x80, 60, 0))     # Note off C4 at frame 3  
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2)
+    let (voices, controls) = toArrays(events, N=4, polyphony=2)
     
     # Check voice 0 gets the note: frame 0=0, frame 1=note on, frame 2=hold, frame 3=note off
     check voices[0][0] == [0'u8, 60, 60, 0]      # notes
@@ -32,7 +32,7 @@ suite "MIDI toArrayFromEvents Tests":
       (2, createMidiEvent(0x80, 60, 0))     # Note off C4 at frame 2
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2)
+    let (voices, controls) = toArrays(events, N=4, polyphony=2)
     
     # Voice 0: C4 from frame 0-2, then off
     check voices[0][0] == [60'u8, 60, 0, 0]      # notes
@@ -49,7 +49,7 @@ suite "MIDI toArrayFromEvents Tests":
       (3, createMidiEvent(0xC0, 42, 0))     # Program change to 42 at frame 3
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2, ccs=[ModWheel, Volume, Program])
+    let (voices, controls) = toArrays(events, N=4, polyphony=2, ccs=[ModWheel, Volume, Program])
     
     check controls[0] == [0'u8, 50, 50, 50]          # ModWheel
     check controls[1] == [0'u8, 0, 127, 127]         # Volume
@@ -60,7 +60,7 @@ suite "MIDI toArrayFromEvents Tests":
       (1, createMidiEvent(0xE0, 0x20, 0x50))  # Pitch bend: LSB=0x20, MSB=0x50 at frame 1
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2)
+    let (voices, controls) = toArrays(events, N=4, polyphony=2)
     
     check controls[1] == [0'u8, 80, 80, 80]          # Bend (MSB=0x50=80) - index 1 in default [Sustain, Bend, BendFine]
     check controls[2] == [0'u8, 32, 32, 32]          # BendFine (LSB=0x20=32) - index 2
@@ -72,7 +72,7 @@ suite "MIDI toArrayFromEvents Tests":
       (2, createMidiEvent(0x90, 67, 120, 0))   # Note on channel 0 again
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2, channels=[0'i8])
+    let (voices, controls) = toArrays(events, N=4, polyphony=2, channels=[0'i8])
     
     # Only channel 0 events should be processed (E4 on channel 1 filtered out)
     check voices[0][0] == [60'u8, 60, 60, 60]        # C4 in voice 0 (channel 0)
@@ -86,7 +86,7 @@ suite "MIDI toArrayFromEvents Tests":
       (2, createMidiEvent(0xA0, 60, 75))    # Poly aftertouch for C4 at frame 2
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2, aftertouch=true)
+    let (voices, controls) = toArrays(events, N=4, polyphony=2, aftertouch=true)
     
     check voices[0][0] == [60'u8, 60, 60, 60]        # notes
     check voices[0][1] == [100'u8, 100, 100, 100]    # velocities  
@@ -99,7 +99,7 @@ suite "MIDI toArrayFromEvents Tests":
       (2, createMidiEvent(0x90, 67, 120))   # Should be dropped
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2)
+    let (voices, controls) = toArrays(events, N=4, polyphony=2)
     
     # Should only have two voices active, third note dropped
     check voices[0][0] == [60'u8, 60, 60, 60]        # C4 in voice 0
@@ -114,7 +114,7 @@ suite "MIDI toArrayFromEvents Tests":
       (2, createMidiEvent(0x90, 60, 0))     # Note on with velocity 0 (equals note off)
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2)
+    let (voices, controls) = toArrays(events, N=4, polyphony=2)
     
     check voices[0][0] == [60'u8, 60, 0, 0]          # Note on then off
     check voices[0][1] == [100'u8, 100, 0, 0]        # Velocity persists then off
@@ -124,7 +124,7 @@ suite "MIDI toArrayFromEvents Tests":
       (1, createMidiEvent(0xD0, 90, 0))  # Channel pressure at frame 1
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2, ccs=[Pressure, Bend, BendFine])
+    let (voices, controls) = toArrays(events, N=4, polyphony=2, ccs=[Pressure, Bend, BendFine])
     
     check controls[0] == [0'u8, 90, 90, 90]          # Channel pressure
 
@@ -135,7 +135,7 @@ suite "MIDI toArrayFromEvents Tests":
       (2, createMidiEvent(0x90, 67, 120, 9))   # Channel 9 - allowed
     ]
     
-    let (voices, controls) = toArrayFromEvents(events, N=4, polyphony=2, channels=[0'i8, 9'i8])
+    let (voices, controls) = toArrays(events, N=4, polyphony=2, channels=[0'i8, 9'i8])
     
     # Should only see channels 0 and 9
     check voices[0][0] == [60'u8, 60, 60, 60]        # Channel 0 note

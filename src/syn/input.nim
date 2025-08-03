@@ -162,8 +162,25 @@ macro unrolledFind*(arr: typed, val: typed): untyped =
       newLit(i))
   result.add newNimNode(nnkElse).add(newLit(-1))
 
+macro jumpFind*(arr: typed, val: typed): untyped =
+  ## Optimized find for static arrays using case statements
+  let arrType = arr.getType()
+  if arrType.kind != nnkBracketExpr or arrType[1].kind != nnkIntLit:
+    return quote do: `arr`.find(`val`)
+
+  result = newNimNode(nnkCaseStmt)
+  result.add(val)
+  
+  for i in 0..<arrType[1].intVal.int:
+    let branch = newNimNode(nnkOfBranch)
+    branch.add(newNimNode(nnkBracketExpr).add(arr, newLit(i)))
+    branch.add(newLit(i))
+    result.add(branch)
+  
+  result.add newNimNode(nnkElse).add(newLit(-1))
+
 # Array-based polyphonic MIDI processing with voice allocation  
-proc toArrayFromEvents*[F, D](
+proc toArrays*[F, D](
   events: openArray[(F, D)],
   N: static int,
   polyphony: static int = 8,
@@ -185,15 +202,6 @@ proc toArrayFromEvents*[F, D](
   result = (default(array[polyphony, array[2 + (when aftertouch: 1 else: 0), array[N, uint8]]]), 
             default(array[ccs.len, array[N, uint8]]))
   
-  # Map CC numbers to array indices
-  const ccToIndex = block:
-    var mapping {.noinit.}: array[128, int]  # CC numbers 0-127
-    for i in 0..<128:
-      mapping[i] = -1  # Not found
-    for i, cc in ccs:
-      if cc.int < 128:  # Is CC (0-127)
-        mapping[cc.int] = i
-    mapping
   
   # Voice allocation state - note 0 = inactive, note > 0 = active with that note
   var notes: array[polyphony, uint8]
@@ -211,19 +219,6 @@ proc toArrayFromEvents*[F, D](
     for sample in 0..<N:
       result[1][cc][sample] = sentinel
   
-  template releaseVoice(voiceNum: int, frame: int) =
-    notes[voiceNum] = 0
-    # Note off = 0 values (not sentinel)
-    result[0][voiceNum][0][frame] = 0
-    result[0][voiceNum][1][frame] = 0
-    when aftertouch:
-      result[0][voiceNum][2][frame] = 0
-    
-  template updateEvent(eventType: ControlType, value: uint8, frame: int) =
-    for i, controlType in ccs:
-      if controlType == eventType:
-        result[1][i][frame] = value
-        break
     
   # Apply sparse MIDI events with voice allocation
   for eventTuple in events:
@@ -256,12 +251,20 @@ proc toArrayFromEvents*[F, D](
           else:  # Velocity 0 = note off
             let voiceNum = unrolledFind(notes, uint8(data[1]))
             if voiceNum >= 0:
-              releaseVoice(voiceNum, frame)
+              notes[voiceNum] = 0
+              result[0][voiceNum][0][frame] = 0
+              result[0][voiceNum][1][frame] = 0
+              when aftertouch:
+                result[0][voiceNum][2][frame] = 0
         
       of NoteOff.uint8:
           let voiceNum = unrolledFind(notes, uint8(data[1]))
           if voiceNum >= 0:
-            releaseVoice(voiceNum, frame)
+            notes[voiceNum] = 0
+            result[0][voiceNum][0][frame] = 0
+            result[0][voiceNum][1][frame] = 0
+            when aftertouch:
+              result[0][voiceNum][2][frame] = 0
         
       of Aftertouch.uint8:
           when aftertouch:
@@ -270,19 +273,27 @@ proc toArrayFromEvents*[F, D](
               result[0][voiceNum][2][frame] = uint8(data[2])
               
       of Cc.uint8:
-          let controlIndex = ccToIndex[data[1]]
+          let controlIndex = jumpFind(ccs, ControlType(data[1]))
           if controlIndex >= 0:
             result[1][controlIndex][frame] = uint8(data[2])
               
       of Program.uint8:
-          updateEvent(Program, uint8(data[1]), frame)
+          let controlIndex = jumpFind(ccs, Program)
+          if controlIndex >= 0:
+            result[1][controlIndex][frame] = uint8(data[1])
               
       of Pressure.uint8:
-          updateEvent(Pressure, uint8(data[1]), frame)
+          let controlIndex = jumpFind(ccs, Pressure)
+          if controlIndex >= 0:
+            result[1][controlIndex][frame] = uint8(data[1])
               
       of Bend.uint8:
-          updateEvent(Bend, uint8(data[2]), frame)     # MSB as main bend control
-          updateEvent(BendFine, uint8(data[1]), frame) # LSB as fine control
+          let bendIndex = jumpFind(ccs, Bend)
+          if bendIndex >= 0:
+            result[1][bendIndex][frame] = uint8(data[2])     # MSB as main bend control
+          let bendFineIndex = jumpFind(ccs, BendFine)
+          if bendFineIndex >= 0:
+            result[1][bendFineIndex][frame] = uint8(data[1]) # LSB as fine control
         
       else:
           discard  # Ignore other MIDI events
