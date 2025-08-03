@@ -12,6 +12,7 @@ installDirs   = @["clib"]
 requires "nim >= 2.0.0"
 requires "nimsimd"
 requires "pffft >= 0.2"
+#requires "mmops"
 
 # Development dependencies
 when not defined(release):
