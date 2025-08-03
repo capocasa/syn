@@ -44,21 +44,9 @@ type ControlType* = enum
 
 #### Main Procedures
 
-**MidiBuffer-based (Jack integration):**
-```nim
-proc toArray*(
-  buffer: MidiBuffer,
-  N: static int,
-  polyphony: static int = 8,
-  aftertouch: static bool = false,
-  ccs: static array = [Sustain, Bend, BendFine],
-  channels: static openArray[int8] = []
-): auto {.noinit.} =
-```
-
 **Array-based (decoupled from Jack):**
 ```nim
-proc toArrayFromEvents*[F, D](
+proc toArrays*[F, D](
   events: openArray[(F, D)],
   N: static int,
   polyphony: static int = 8,
@@ -72,9 +60,11 @@ Where `F` is frame number type (SomeInt) and `D` is MIDI data type (array[3, uin
 ### Performance Optimizations
 
 #### 1. Compile-time Optimizations (implemented)
-- `unrolledFind` macro generates optimal voice search code
+- `unrolledFind` macro generates optimal voice search code for voice allocation (linear search)
+- `jumpFind` macro generates efficient case statements for static array lookups (CC controls)
 - Direct uint8 case dispatch eliminates enum conversion overhead
 - Zero-overhead abstractions through static parameters
+- Eliminated `updateEvent` template in favor of direct macro calls for better performance
 
 #### 2. Voice Allocation Algorithm
 - Linear search for available voices (optimal for typical polyphony counts)
@@ -181,82 +171,12 @@ Created comprehensive test suites using Nim's unittest framework:
 - **Fits in uint8**: Elegant unified representation without collision concerns
 
 ## Current Status
-- ✅ **Core implementation complete and fully functional**
-- ✅ **Comprehensive test suite: 14/14 tests passing**
-  - ✅ Basic test suite: 10/10 tests passing
-  - ✅ Big test suite: 4/4 tests passing  
-- ✅ **MIDI standard compliance verified**
-- ✅ **Mock JACK implementation functional**
-- ✅ **Forward-fill algorithm working correctly with no sentinel value leaks**
-- ✅ **Voice allocation and polyphonic processing working**
-- ✅ **Control change processing functional** (ModWheel, Volume, Program, etc.)
-- ✅ **Pitch bend handling with proper MSB/LSB separation**
-- ✅ **Channel filtering working correctly**
-- ✅ **Note on/off behavior including velocity 0 = note off**
-- ✅ **Polyphonic aftertouch processing fully functional**
-- ✅ **Sample-accurate timing verified** - note-off events take effect at exact frame
-- ✅ **Sparse-to-dense conversion working correctly** - no sentinel values in final output
-- ✅ **Separation of concerns achieved** - decoupled from Jack dependencies
+- ✅ Basic test suite: 10/10 tests passing
+- ✅ Big test suite: 4/4 tests passing  
 
 ## Files
 - archive/midi-to-array.md (this documentation)
 - src/syn/input.nim (main MIDI processing implementation - transferred from jill)
 - tests/test_midi.nim (basic functionality tests - transferred from jill/test_toarray.nim)
 - tests/test_midi_long.nim (comprehensive scenario tests - transferred from jill/test_toarray_big.nim)
-- archive/midi.nim.1-6 (development backup versions from jill project)
-
-## Implementation Complete ✅
-**The MIDI processing system is now production-ready** with:
-- Full polyphonic voice allocation (configurable polyphony)
-- Complete control change support with forward-filling
-- Sample-accurate timing for all MIDI events
-- Comprehensive test coverage ensuring reliability
-- Zero sentinel value leaks in output arrays
-- Efficient memory layout for SIMD processing
-- **Improved separation of concerns with dual implementations:**
-  - `toArray()` - Jack MidiBuffer integration for audio applications
-  - `toArrayFromEvents()` - Standalone array-based processing for any project
-
-### Recent Optimizations Completed ✅
-1. **Replaced findVoiceForNote template with unrolledFind macro** - Migrated from 50-line manual unrolling to reusable macro from `jill/util.nim`
-2. **Optimized MIDI event dispatch** - Replaced `if eventType in [...]` array check with direct `case eventType:` on uint8 values
-3. **Inlined single-use templates** - Removed `updateCc` and `assignVoice` templates, inlined their single usages for cleaner code
-4. **Separation of concerns refactoring** - Created `toArrayFromEvents()` to decouple MIDI processing from Jack dependencies
-
-### Code Quality Improvements
-- **Macro-based unrolling**: Voice search now uses `unrolledFind(notes, noteNum)` macro for maintainable performance
-- **Direct uint8 dispatch**: MIDI events processed via `case eventType:` with `NoteOn.uint8`, `NoteOff.uint8`, etc.
-- **Reduced abstraction overhead**: Eliminated unnecessary template layers for single-use code patterns
-- **Better modularity**: Core MIDI processing logic available independently of Jack/audio infrastructure
-
-## Project Transfer ✅
-**Transferred to syn project (August 2025)** - The standalone MIDI processing functionality has been successfully migrated:
-
-### What Was Transferred
-- **Core implementation**: `toArrayFromEvents()` procedure with all MIDI processing logic
-- **Supporting infrastructure**: `ControlType` enum, `unrolledFind` macro, complete type system
-- **Comprehensive test suite**: 14 tests (10 basic + 4 comprehensive scenarios) - all passing
-- **Documentation**: Complete development history and implementation details
-- **Backup versions**: All MIDI development iterations (midi.nim.1-6)
-
-### New Location Structure
-```
-syn/
-├── src/syn/input.nim           # Main MIDI processing module
-├── tests/test_midi.nim         # Basic functionality tests (10 tests)
-├── tests/test_midi_long.nim    # Comprehensive scenarios (4 tests)
-└── archive/
-    ├── midi-to-array.md        # This documentation
-    ├── midi.nim.1-6            # Development backups
-    └── jill.nim.1              # Related backup
-```
-
-### Decoupling Achieved
-- **Zero dependencies**: No jill, jacket, or Jack audio framework requirements
-- **Pure array processing**: Uses `toArrayFromEvents()` with standard Nim arrays
-- **Standalone module**: Can be imported into any Nim project
-- **Test compatibility**: All original test logic preserved and working
-
-### Integration
-The transferred module provides the same high-performance MIDI-to-array conversion in the syn audio synthesis project, enabling sample-accurate polyphonic MIDI control of synthesizers and effects without audio framework dependencies.
 
