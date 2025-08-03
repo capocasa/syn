@@ -39,6 +39,81 @@ type
     Bend = 0xE0
     BendFine = 0xF8    # Synthetic: fine pitch bend control
 
+
+template type*(data: openArray[byte]): uint8 =
+  uint8(data[0] and 0xF0)
+
+template chan*(data: openArray[byte]): uint8 =
+  uint8(data[0] and 0x0F)
+
+template note*(data: openArray[byte]): uint8 =
+  assert (data[0] and 0xF0) in [0x80'u8, 0x90'u8, 0xA0'u8]
+  uint8(data[1])
+
+template velocity*(data: openArray[byte]): uint8 =
+  assert (data[0] and 0xF0) in [0x80'u8, 0x90'u8, 0xA0'u8]
+  uint8(data[2])
+
+template cc*(data: openArray[byte]): uint8 =
+  assert (data[0] and 0xF0) == 0xB0
+  uint8(data[1])
+
+template val*(data: openArray[byte]): uint8 =
+  assert (data[0] and 0xF0) == 0xB0
+  uint8(data[2])
+
+template program*(data: openArray[byte]): uint8 =
+  assert (data[0] and 0xF0) == 0xC0
+  uint8(data[1])
+
+template bend*(data: openArray[byte]): uint16 =
+  assert (data[0] and 0xF0) == 0xE0
+  uint16(data[1]) or (uint16(data[2]) shl 7)
+
+template `type=`*(data: var openArray[byte], value: uint8) =
+  data[0] = uint8((value and 0xF0) or (data[0] and 0x0F))
+
+template `chan=`*(data: var openArray[byte], value: range[0'u8..15'u8]) =
+  data[0] = uint8((data[0] and 0xF0) or (value and 0x0F))
+
+template `note=`*(data: var openArray[byte], value: range[0'u8..127'u8]) =
+  assert (data[0] and 0xF0) in [0x80'u8, 0x90'u8, 0xA0'u8]
+  data[1] = uint8(value)
+
+template `velocity=`*(data: var openArray[byte], value: range[0'u8..127'u8]) =
+  assert (data[0] and 0xF0) in [0x80'u8, 0x90'u8, 0xA0'u8]
+  data[2] = uint8(value)
+
+template `cc=`*(data: var openArray[byte], value: range[0'u8..127'u8]) =
+  assert (data[0] and 0xF0) == 0xB0
+  data[1] = uint8(value)
+
+template `val=`*(data: var openArray[byte], value: range[0'u8..127'u8]) =
+  assert (data[0] and 0xF0) == 0xB0
+  data[2] = uint8(value)
+
+template `program=`*(data: var openArray[byte], value: range[0'u8..127'u8]) =
+  assert (data[0] and 0xF0) == 0xC0
+  data[1] = uint8(value)
+
+template `bend=`*(data: var openArray[byte], value: range[0'u16..16383'u16]) =
+  assert (data[0] and 0xF0) == 0xE0
+  data[1] = uint8(value and 0x7F)
+  data[2] = uint8((value shr 7) and 0x7F)
+
+
+template isSysEx*(data: openArray[byte]): bool =
+  data[0] == 0xF0 and data[^1] == 0xF7
+
+template manufacturerId*(data: openArray[byte]): uint8 =
+  assert data.isSysEx
+  data[1]
+
+template sysExData*(data: openArray[byte]): openArray[byte] =
+  assert data.isSysEx
+  data[2..^2]
+
+
 proc `$`*(data: openArray[byte]): string {.used.} =
   if data.len == 0:
     return "Empty MIDI Event"
