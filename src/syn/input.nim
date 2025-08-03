@@ -1,0 +1,252 @@
+import macros
+
+type
+  ControlType* = enum
+    # CC control messages (0-127)
+    BankSelect = 0
+    ModWheel = 1
+    BreathController = 2
+    FootController = 4
+    Portamento = 5
+    DataEntry = 6
+    Volume = 7
+    Balance = 8
+    Pan = 10
+    Expression = 11
+    Sustain = 64
+    Portamento2 = 65
+    Sostenuto = 66
+    SoftPedal = 67
+    Legato = 68
+    Hold2 = 69
+    FilterResonance = 71
+    ReleaseTime = 72
+    AttackTime = 73
+    FilterCutoff = 74
+    Reverb = 91
+    Tremolo = 92
+    Chorus = 93
+    Detune = 94
+    Phaser = 95
+    
+    # MIDI event types (128+)
+    NoteOff = 0x80
+    NoteOn = 0x90
+    Aftertouch = 0xA0
+    Cc = 0xB0
+    Program = 0xC0
+    Pressure = 0xD0
+    Bend = 0xE0
+    BendFine = 0xF8    # Synthetic: fine pitch bend control
+
+proc `$`*(data: openArray[byte]): string {.used.} =
+  if data.len == 0:
+    return "Empty MIDI Event"
+  
+  if data.isSysEx:
+    return "SysEx (manufacturer: " & $data.manufacturerId & ", " & $(data.len - 3) & " data bytes)"
+  
+  let eventType = data.type
+  let channel = data.chan
+  
+  # Use automatic string representation for ControlType enum
+  if eventType >= 0x80'u8:  # MIDI event type
+    try:
+      let controlType = ControlType(eventType)
+      case controlType:
+      of NoteOff: 
+        return $controlType & "(ch=" & $channel & ", note=" & $data.note & ", vel=" & $data.velocity & ")"
+      of NoteOn: 
+        return $controlType & "(ch=" & $channel & ", note=" & $data.note & ", vel=" & $data.velocity & ")"
+      of Aftertouch: 
+        return $controlType & "(ch=" & $channel & ", note=" & $data.note & ", pressure=" & $data.velocity & ")"
+      of Cc: 
+        return $controlType & "(ch=" & $channel & ", cc=" & $data.cc & ", val=" & $data.val & ")"
+      of Program: 
+        return $controlType & "(ch=" & $channel & ", program=" & $data.program & ")"
+      of Pressure: 
+        return $controlType & "(ch=" & $channel & ", pressure=" & $data[1] & ")"
+      of Bend: 
+        return $controlType & "(ch=" & $channel & ", bend=" & $data.bend & ")"
+      else:
+        return $controlType & "(type=" & $eventType & ", " & $data.len & " bytes)"
+    except:
+      return "Unknown MIDI Event(type=" & $eventType & ", " & $data.len & " bytes)"
+  else:
+    return "Unknown Event(type=" & $eventType & ", " & $data.len & " bytes)"
+
+macro unrolledFind*(arr: typed, val: typed): untyped =
+  let arrType = arr.getType()
+  if arrType.kind != nnkBracketExpr or arrType[1].kind != nnkIntLit:
+    return quote do: `arr`.find(`val`)
+
+  result = newNimNode(nnkIfStmt)
+  for i in 0..<arrType[1].intVal.int:
+    result.add newNimNode(nnkElifBranch).add(
+      newNimNode(nnkInfix).add(newIdentNode("=="), newNimNode(nnkBracketExpr).add(arr, newLit(i)), val),
+      newLit(i))
+  result.add newNimNode(nnkElse).add(newLit(-1))
+
+# Array-based polyphonic MIDI processing with voice allocation  
+proc toArrayFromEvents*[F, D](
+  events: openArray[(F, D)],
+  N: static int,
+  polyphony: static int = 8,
+  aftertouch: static bool = false,
+  ccs: static array = [Sustain, Bend, BendFine],
+  channels: static openArray[int8] = []
+): auto {.noinit.} =
+  ## Generates polyphonic MIDI arrays from an array of (frame, midi_data) tuples.
+  ## Each tuple should be (SomeInt, array[3, uint8]) where:
+  ## - SomeInt is the frame number
+  ## - array[3, uint8] is the MIDI data [status_byte, data1, data2]
+  ## Returns (noteData, globalData) where:
+  ## - noteData: [voice][data][sample] as uint8 values  
+  ## - globalData: [control][sample] as uint8 values for specified global controls
+  ## Uses 0xFF as sentinel (MIDI is 7-bit (0-127) anyway).
+  
+  const sentinel = high(uint8)  # 0xFF, MSB set
+  
+  result = (default(array[polyphony, array[2 + (when aftertouch: 1 else: 0), array[N, uint8]]]), 
+            default(array[ccs.len, array[N, uint8]]))
+  
+  # Map CC numbers to array indices
+  const ccToIndex = block:
+    var mapping {.noinit.}: array[128, int]  # CC numbers 0-127
+    for i in 0..<128:
+      mapping[i] = -1  # Not found
+    for i, cc in ccs:
+      if cc.int < 128:  # Is CC (0-127)
+        mapping[cc.int] = i
+    mapping
+  
+  # Voice allocation state - note 0 = inactive, note > 0 = active with that note
+  var notes: array[polyphony, uint8]
+  
+  # Initialize voice data with sentinel values
+  for voiceId in 0..<polyphony:
+    for frame in 0..<N:
+      result[0][voiceId][0][frame] = sentinel  # note
+      result[0][voiceId][1][frame] = sentinel  # velocity
+      when aftertouch:
+        result[0][voiceId][2][frame] = sentinel  # aftertouch
+  
+  # Initialize global data with sentinel values  
+  for cc in 0..<ccs.len:
+    for sample in 0..<N:
+      result[1][cc][sample] = sentinel
+  
+  template releaseVoice(voiceNum: int, frame: int) =
+    notes[voiceNum] = 0
+    # Note off = 0 values (not sentinel)
+    result[0][voiceNum][0][frame] = 0
+    result[0][voiceNum][1][frame] = 0
+    when aftertouch:
+      result[0][voiceNum][2][frame] = 0
+    
+  template updateEvent(eventType: ControlType, value: uint8, frame: int) =
+    for i, controlType in ccs:
+      if controlType == eventType:
+        result[1][i][frame] = value
+        break
+    
+  # Apply sparse MIDI events with voice allocation
+  for eventTuple in events:
+    let frame = int(eventTuple[0])
+    let data = eventTuple[1]
+    
+    if frame < N:
+      # Channel filtering
+      when channels.len > 0:
+        var found = false
+        for allowedChannel in channels:
+          if (data[0] and 0x0F) == uint8(allowedChannel):
+            found = true
+            break
+        if not found:
+          continue
+      
+      let eventType = uint8(data[0] and 0xF0)  # Get status byte without channel
+      case eventType:
+      of NoteOn.uint8:
+          if data[2] > 0:  # Real note on (velocity > 0)
+            let freeVoice = unrolledFind(notes, 0'u8)
+            if freeVoice >= 0:
+              notes[freeVoice] = uint8(data[1])
+              result[0][freeVoice][0][frame] = uint8(data[1])  # note
+              result[0][freeVoice][1][frame] = uint8(data[2])  # velocity
+              when aftertouch:
+                result[0][freeVoice][2][frame] = 0  # No aftertouch yet
+            # else: TODO: warn about dropped note - no available voices
+          else:  # Velocity 0 = note off
+            let voiceNum = unrolledFind(notes, uint8(data[1]))
+            if voiceNum >= 0:
+              releaseVoice(voiceNum, frame)
+        
+      of NoteOff.uint8:
+          let voiceNum = unrolledFind(notes, uint8(data[1]))
+          if voiceNum >= 0:
+            releaseVoice(voiceNum, frame)
+        
+      of Aftertouch.uint8:
+          when aftertouch:
+            let voiceNum = unrolledFind(notes, uint8(data[1]))
+            if voiceNum >= 0:
+              result[0][voiceNum][2][frame] = uint8(data[2])
+              
+      of Cc.uint8:
+          let controlIndex = ccToIndex[data[1]]
+          if controlIndex >= 0:
+            result[1][controlIndex][frame] = uint8(data[2])
+              
+      of Program.uint8:
+          updateEvent(Program, uint8(data[1]), frame)
+              
+      of Pressure.uint8:
+          updateEvent(Pressure, uint8(data[1]), frame)
+              
+      of Bend.uint8:
+          updateEvent(Bend, uint8(data[2]), frame)     # MSB as main bend control
+          updateEvent(BendFine, uint8(data[1]), frame) # LSB as fine control
+        
+      else:
+          discard  # Ignore other MIDI events
+  
+  # Forward fill pass - maintain voice state until next event
+  for i in 0..<polyphony:
+    var lastNote: uint8 = 0
+    var lastVelocity: uint8 = 0
+    when aftertouch:
+      var lastAftertouch: uint8 = 0
+    
+    for frame in 0..<N:
+      # Handle aftertouch updates first (independent of note events)
+      when aftertouch:
+        if result[0][i][2][frame] != sentinel:
+          lastAftertouch = result[0][i][2][frame]
+      
+      # Check if this sample has new data for this voice
+      if result[0][i][0][frame] != sentinel:  # Non-sentinel = actual event data
+        lastNote = result[0][i][0][frame]
+        lastVelocity = result[0][i][1][frame]
+        when aftertouch:
+          if result[0][i][2][frame] == sentinel:
+            # Note event but no aftertouch - preserve existing aftertouch
+            result[0][i][2][frame] = lastAftertouch
+      else:
+        # Fill with last known values
+        result[0][i][0][frame] = lastNote
+        result[0][i][1][frame] = lastVelocity
+        when aftertouch:
+          result[0][i][2][frame] = lastAftertouch
+  
+  # Forward fill pass for global controls
+  for cc in 0..<ccs.len:
+    var lastCc: uint8 = 0
+    
+    for frame in 0..<N:
+      if result[1][cc][frame] != sentinel:  # Non-sentinel = actual event data
+        lastCc = result[1][cc][frame]
+      else:
+        # Fill with last known value (0 if no data yet)
+        result[1][cc][frame] = lastCc
